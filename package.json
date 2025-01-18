@@ -1,0 +1,33 @@
+{
+  "name": "osc-video-stream-server",
+  "version": "1.0.0",
+  "description": "Server that provides a video player website and accepts OSC commands for remotely setting the video file path and playback position.",
+  "main": "src/main.js",
+  "bin": "dist/osc-video-stream-server.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "bundle": "webpack --config webpack.config.js",
+    "build": "webpack --config webpack.config.js && pkg . --out-path dist"
+  },
+  "pkg": {
+    "targets": [
+      "node18-linux-x64",
+      "node18-macos-x64",
+      "node18-win-x64"
+    ]
+  },
+  "author": "Trinitou",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "fs": "^0.0.1-security",
+    "node-osc": "^9.1.4",
+    "osc-video-stream-server": "file:",
+    "path": "^0.12.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "webpack": "^5.97.1",
+    "webpack-cli": "^6.0.1"
+  }
+}
