@@ -14,7 +14,9 @@ When the server is running,
 - in the command line, the address for the video player website is shown. For now, it's always `http://localhost:6789`. Open it in a web browser of your choice.
 - an OSC-capable app can connect to the server on port `12345` an send the following commands:
   - `/path`: set the path to a local video file to be streamed
-  - `/set-play-pos`: set the current play position in seconds
+  - `/set-play-pos`: set the current playback position in seconds
+
+Also on start the server once sends a `/refesh` OSC command on port `54321` so that an open OSC app can resend the video file path and playback position for initialization.
 
 ## Known issues
 

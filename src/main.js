@@ -1,4 +1,4 @@
-const { Server } = require('node-osc');
+const { Server, Client } = require('node-osc');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -33,7 +33,6 @@ class WsApi {
 
 class OscServer {
   #port;
-  #server;
   #onMessage;
 
   #log(message) {
@@ -43,21 +42,28 @@ class OscServer {
   constructor(port, onMessage) {
     this.#port = port;
     this.#onMessage = onMessage;
-    this.#server = new Server(this.#port, '0.0.0.0', () => {
+    const server = new Server(this.#port, '0.0.0.0', () => {
       this.#log(`listening on port ${this.#port}`);
     });
-    this.#server.on('message', message => {
+    server.on('message', message => {
       this.#onMessage(message[0], message.slice(1));
     });
   }
 }
 
+function sendMessageToOscClient(outPort, message, ...args) {
+  const client = new Client('localhost', outPort);
+  client.send(message, () => {
+    client.close();
+  });
+}
+
 class VideoPlayerHtmlServer {
   #port;
+  #videoUrl;
   #wsPort;
   #onGetVideoFilePath;
   #onVideoFileStreamSetupSuccess;
-  #app;
 
   #log(message) {
     console.log(`html server: ${message}`);
@@ -69,11 +75,38 @@ class VideoPlayerHtmlServer {
   <head>
     <meta charset="UTF-8">
     <title>Bitwig Video Player</title>
+    <style>
+        html, body {
+          margin: 0;
+          padding: 0;
+          overflow: hidden;
+        }
+        .video-container {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background-color: black;
+          overflow: hidden;
+        }
+        .video-container video {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          max-width: 100%;
+          max-height: 100%;
+          width: auto;
+          height: auto;
+          transform: translate(-50%, -50%);
+          object-fit: cover;
+        }
+    </style>
   </head>
-  <body>
-    <video id="video" width="640" height="360" muted controls>
-      <source src="/video" type="video/mp4">
-    </video>
+  <body class="video-container">
+    <div>
+      <video id="video" src="${this.#videoUrl}" type="video/mp4" muted controls></video>
+    </div>
     <script>
       const video = document.getElementById('video');
       class WsApi {
@@ -93,7 +126,6 @@ class VideoPlayerHtmlServer {
           };
         }
       }
-
       const wsApi = new WsApi((command, data) => {
         switch(command) {
           case '${VideoPlayerApiCommand.SetPlayPos}':
@@ -109,23 +141,22 @@ class VideoPlayerHtmlServer {
 </html>`;
   }
 
-  #serveVideoFileSteam(range, res, path) {
-    // not sure how this works exactly (was AI genererated) but somehow it does stream mp4 video files to the player
-
-    const stat = fs.statSync(path);
-    const fileSize = stat.size;
+  #serveVideoFileSteam(range, res) {
+    const path = this.#onGetVideoFilePath();
+    if (!path)
+      return res.status(404).send('no video file present');
+    const fileSize = fs.statSync(path).size;
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
+      this.#log(`website requested video range ${start} to ${end} of ${fileSize}`);
       if (start >= fileSize || end >= fileSize) {
         res.writeHead(416, {
           'Content-Range': `bytes */${fileSize}`
         });
         return res.end();
       }
-
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
@@ -134,32 +165,31 @@ class VideoPlayerHtmlServer {
       });
       fs.createReadStream(path, { start, end }).pipe(res);
     } else {
+      this.#log('website requested full video file');
       res.writeHead(200, {
         'Content-Length': fileSize,
-        'Content-Type': 'video/mp4'
+        'Content-Type': 'video/mp4',
       });
       fs.createReadStream(path).pipe(res);
     }
+    this.#onVideoFileStreamSetupSuccess();
   }
 
   constructor(port, wsPort, onGetVideoFilePath, onVideoFileStreamSetupSuccess) {
     this.#port = port;
+    this.#videoUrl = '/video';
     this.#wsPort = wsPort;
     this.#onGetVideoFilePath = onGetVideoFilePath;
     this.#onVideoFileStreamSetupSuccess = onVideoFileStreamSetupSuccess;
-    this.#app = express();
+    const app = express();
     // this.#app.use(express.static(path.join(__dirname, '~'))); // go up in folder hierarchy
-    this.#app.get('/', (req, res) => {
+    app.get('/', (_req, res) => {
       res.send(this.#getHtml());
     });
-    this.#app.get('/video', (req, res) => {
-      const path = this.#onGetVideoFilePath();
-      if (!path)
-        return;
-      this.#serveVideoFileSteam(req.headers.range, res, path);
-      this.#onVideoFileStreamSetupSuccess();
+    app.get(this.#videoUrl, (req, res) => {
+      return this.#serveVideoFileSteam(req.headers.range, res);
     });
-    this.#app.listen(this.#port, () => {
+    app.listen(this.#port, () => {
       this.#log(`running at http://localhost:${this.#port}`);
     });
   }
@@ -176,26 +206,26 @@ const wsApi = new WsApi(wsPort, () => {
   if (videoFilePath)
     wsApi.sendToClient(VideoPlayerApiCommand.ReloadVideo);
 });
-const OscCommand = {
+const OscInCommand = {
   SetFilePath: '/path',
   SetPlayPos: '/play-pos'
 };
-const oscPort = 12345;
-new OscServer(oscPort, (address, args) => {
+const oscInPort = 12345;
+new OscServer(oscInPort, (address, args) => {
   switch (address) {
-    case OscCommand.SetPlayPos:
+    case OscInCommand.SetPlayPos:
       const playPos = args[0];
       lastPlayPos = playPos;
       wsApi.sendToClient(VideoPlayerApiCommand.SetPlayPos, playPos);
       break;
-    case OscCommand.SetFilePath:
+    case OscInCommand.SetFilePath:
       videoFilePath = (path => {
         path = path.replace(/"/g, '').replace(/\\/g, '/'); // accept different path notations
         if (!fs.existsSync(path)) {
-          console.log(`invalid file path provided : '${path}'`);
+          console.log(`received file path via OSC: '${path}' ... but file doesn't exist!`);
           return null;
         }
-        console.log(`new file path provided : '${path}'`);
+        console.log(`received file path via OSC: '${path}'`);
         return path;
       })(args[0]);
       wsApi.sendToClient(VideoPlayerApiCommand.ReloadVideo);
@@ -208,3 +238,8 @@ new VideoPlayerHtmlServer(6789, wsPort, () => {
   if (lastPlayPos)
     wsApi.sendToClient(VideoPlayerApiCommand.SetPlayPos, lastPlayPos);
 });
+const OscOutCommand = {
+  Refresh: '/refresh'
+};
+const oscOutPort = 54321;
+sendMessageToOscClient(oscOutPort, OscOutCommand.Refresh); // just once request the OSC app to send video path and play pos for initialization (in case it was already open)
